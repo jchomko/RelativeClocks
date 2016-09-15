@@ -2,9 +2,6 @@
   Relative Clocks Arduino Code
   Jonathan Chomko Sept 2016
 */
-//issue around serial - seems to hang if you send multiple commands. might have somethign to do with low memory, probably does. order a bigger arduino
-
-
 #include <DS3231.h>
 #include <SPI.h>
 #include <SD.h>
@@ -20,8 +17,8 @@ char buf[40];
 long filePosition;
 
 //Hand values
-float currentOffset;
-long offsetTimer;
+unsigned long currentOffset;
+unsigned long offsetTimer;
 bool hand1;
 bool hand2;
 int earthHandAngle;
@@ -30,8 +27,8 @@ int spaceHandAngle;
 bool getData;
 String dataDate = "";
 String currDate = "";
-
 int beepPin = 10;
+
 
 void setup()
 {
@@ -42,7 +39,7 @@ void setup()
 
   clock.begin();
 
-  //Serial.setTimeout(150);
+  Serial.setTimeout(150);
 
   // Disarm alarms and clear alarms for this example, because alarms is battery backed.
   // Under normal conditions, the settings should be reset after power and restart microcontroller.
@@ -68,18 +65,16 @@ void setup()
 
   Serial.println("initialization done.");
 
-  //if(!data){
-
-  data = SD.open("DATA.TXT");
-
-  //}
+  if (data) {
+    data = SD.open("DATA.TXT");
+  }
 
   dt = clock.getDateTime();
   char * cd = clock.dateFormat("Y-m-d", dt);
   currDate = String(cd);
   Serial.println(currDate);
 
-  //startDataCheck();
+  startDataCheck();
 
 }
 
@@ -92,16 +87,16 @@ void loop()
   if (Serial.available() > 0) {
 
     String s =  Serial.readStringUntil('\n');
-    
+
     Serial.println(s);
-    
+
     //If READ
     if (s.charAt(0) == 'R') {
 
       dt = clock.getDateTime();
       Serial.println(clock.dateFormat("d-m-Y H:i:s - l", dt));
 
-      //IF Set
+    //Set RTC 
     } else if (s.charAt(0) == 'S') {
 
 
@@ -112,9 +107,6 @@ void loop()
       String mn = s.substring(11, 13);
       String ss = s.substring(13, 15);
       String out = y + m + d + hr + mn + ss;
-
-      //Serial.print("read: ");
-      // Serial.println(out);
 
       int iy  = y.toInt();
       int im  = m.toInt();
@@ -135,24 +127,21 @@ void loop()
     } else if (s.charAt(0) == 'U') {
 
       Serial.println("updating");
-
       startDataCheck();
-
-      Serial.println("started checking data");
-
+      
     }
 
     else if (s.charAt(0) == 'C') {
       
-      clock.begin();
-      //dt = clock.getDateTime();
       char * cd = clock.dateFormat("Y-m-d", dt);
       currDate = String(cd);
       Serial.println(currDate);
-      
+
     }
   }
 
+
+  unsigned long currentMillis = millis();
 
   //Trigger for Earth Hand
   if (clock.isAlarm1())
@@ -167,20 +156,20 @@ void loop()
     hand2 = true;
 
     //Start offset timer
-    offsetTimer = millis();
+    offsetTimer = currentMillis;
 
   }
 
 
   //Turn off earth LED
-  if (millis() - offsetTimer > 50 && hand1 == true) {
+  if (currentMillis - offsetTimer > 30 && hand1 == true) {
     hand1 = false;
     //led
     digitalWrite(5, LOW);
   }
 
   //Trigger for Space Hand
-  if (millis() - offsetTimer > currentOffset && hand2 == true ) {
+  if (currentMillis - offsetTimer > currentOffset && hand2 == true ) {
     hand2 = false;
     //led
     digitalWrite(6, HIGH);
@@ -190,69 +179,32 @@ void loop()
   }
 
   //Turn off space LED
-  if (millis() - offsetTimer > currentOffset + 50 && hand2 == false) {
+  if (millis() - offsetTimer > currentOffset + 30 && hand2 == false) {
     digitalWrite(6, LOW);
   }
 
-  //Trigger to get new offset data
+  //Trigger once a day to get new offset data
   if (clock.isAlarm2()) {
-
-    startDataCheck();
-
+      startDataCheck();
   }
 
-  //delay(10);
   checkData();
 
 }
 
 void startDataCheck() {
 
-//      data.close();
-//      
-//      clock.begin();
-//      dt = clock.getDateTime();
-//      char * cd = clock.dateFormat("Y-m-d", dt);
-//      currDate = String(cd);
-//      Serial.println(currDate);
-
-  //if (!SD.begin(4)) {
-  //  Serial.println("initialization failed!");
-  // return;
-  //  }
-
-  //  getData = true;
-
-
-  //  dt = clock.getDateTime();
-  //  char * cd = clock.dateFormat("Y-m-d", dt);
-  //  currDate = String(cd);
-  //  Serial.println(currDate);
-  //
-  //  delay(50);
-  //
-  //  data = SD.open("DATA.TXT");
-
-
- // data.close();
-
- if (!SD.begin()) {
-    Serial.println("initialization failed!");
-    // return;
+  if (data) {
+    data = SD.open("DATA.TXT");
+  } else {
+    if (!SD.begin()) {
+      Serial.println("initialization failed!");
+    } else {
+      Serial.println("initialization done.");
+    }
   }
 
-  Serial.println("initialization done.");
-
-  //if(!data){
-
-  data = SD.open("DATA.TXT");
-  
   getData = true;
-
-//  data = SD.open("DATA.TXT");
-  // currDate = "2016-09-09";
-
-
 
 }
 
@@ -260,12 +212,10 @@ void startDataCheck() {
 void checkData() {
 
   if ( getData) {
-  
+
     if (dataDate != currDate) {
 
-
       if (data.available()) {
-
         char c = data.read();
 
         if (index < 40) {
@@ -274,28 +224,25 @@ void checkData() {
         }
 
         if (c == '\n') {
+          
           String s = String(buf);
           dataDate = s.substring(0, 10);
 
           String offset = s.substring(22, 32);
-          currentOffset = offset.toFloat();
+          currentOffset = (unsigned long)offset.toFloat();
 
-          // Serial.print(buf);
           Serial.println(dataDate);
-          //Serial.println(offset);
           index = 0;
 
-        } else {
-          // Serial.print(buf);
-
         }
-
-      } else {
         
+      } else {
+      
         Serial.println("data not available");
         data = SD.open("DATA.TXT");
+      
       }
-
+      
     } else {
 
       Serial.println("match found");
@@ -304,98 +251,8 @@ void checkData() {
       Serial.println(currentOffset);
       filePosition = data.position();
       getData = false;
-      
-//      data.close();
+
     }
-    // Serial.println(filePosition);
-  } else {
-    //Serial.println("getData = false");
   }
-
-
-
 }
-
-
-//void checkData1() {
-//
-//
-//  //  if (!SD.begin(4)) {
-//  //    Serial.println("initialization failed!");
-//  //    return;
-//  //  }
-//  //  Serial.println("initialization done.");
-//  //
-//  //  data = SD.open("DATA.TXT");
-//
-//  //  if (data) {
-//  //    // Serial.println("data.txt:");
-//  //
-//  //    // read from the file until there's nothing else in it:
-//  //    if (data.available()) {
-//  //
-//  //      char c = data.read();
-//  //      //Serial.write(c);
-//  //      if (c == '\n') {
-//  //        break;
-//  //      }
-//  //    }
-//  //
-//  //  } else {
-//  //    // if the file didn't open, print an error:
-//  //    //Serial.println("error opening data.txt");
-//  //  }
-//
-//  //Serial.println("done!");
-//  String dataDate = "";
-//
-//  if (data) {
-//
-//    while (dataDate != currDate) {
-//
-//      while (data.available()) {
-//
-//        char c = data.read();
-//        if (index < 40) {
-//          buf[index] = c;
-//          index ++;
-//        }
-//
-//        if (c == '\n') {
-//          String s = String(buf);
-//          dataDate = s.substring(0, 10);
-//
-//          String offset = s.substring(22, 32);
-//          currentOffset = offset.toFloat();
-//
-//          // Serial.print(buf);
-//          Serial.println(dataDate);
-//          //Serial.println(offset);
-//          index = 0;
-//          break;
-//
-//        }
-//
-//      }
-//
-//    }
-//
-//    Serial.println("match found");
-//    Serial.println(dataDate);
-//    Serial.println(currDate);
-//    Serial.println(currentOffset);
-//    filePosition = data.position();
-//    // Serial.println(filePosition);
-//  }
-//
-//  data.close();
-//
-//}
-//
-//
-//
-//
-//
-//
-//
 
