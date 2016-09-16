@@ -7,6 +7,12 @@
 #include <DS3231.h>
 #include <SPI.h>
 #include <SD.h>
+#include "U8glib.h"
+
+
+//Display Variables
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE | U8G_I2C_OPT_DEV_0); // I2C / TWI
+
 
 //RTC variables
 DS3231 clock;
@@ -33,6 +39,8 @@ int beepPin = 10;
 int attemptCount;
 int maxAttempts = 10;
 
+String sCurrOffset;
+int currSecond;
 
 void setup()
 {
@@ -59,8 +67,8 @@ void setup()
   //Trigger every day
   clock.setAlarm2(0, 0, 10, DS3231_MATCH_H_M, true);
 
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
+  pinMode(11, OUTPUT);
+  pinMode(12, OUTPUT);
 
   if (!SD.begin()) {
     Serial.println("initialization failed!");
@@ -78,7 +86,31 @@ void setup()
   currDate = String(cd);
   Serial.println(currDate);
 
+
+  //Display
+  u8g.setFont(u8g_font_5x7);
+  u8g.setFontPosTop();
+
+  // assign default color value
+  if ( u8g.getMode() == U8G_MODE_R3G3B2 ) {
+    u8g.setColorIndex(255);     // white
+  }
+  else if ( u8g.getMode() == U8G_MODE_GRAY2BIT ) {
+    u8g.setColorIndex(3);         // max intensity
+  }
+  else if ( u8g.getMode() == U8G_MODE_BW ) {
+    u8g.setColorIndex(1);         // pixel on
+  }
+  else if ( u8g.getMode() == U8G_MODE_HICOLOR ) {
+    u8g.setHiColorByRGB(255, 255, 255);
+  }
+
+  sCurrOffset = "";
+  earthHandAngle = 0;
+  spaceHandAngle = 0;
+  
   //startDataCheck();
+  startDataCheck();
 
 }
 
@@ -86,7 +118,6 @@ void setup()
 
 void loop()
 {
-
   //Set time via Serial
   if (Serial.available() > 0) {
 
@@ -148,8 +179,7 @@ void loop()
 
     }
 
-
-  }
+}
 
 
   unsigned long currentMillis = millis();
@@ -157,8 +187,22 @@ void loop()
   //Trigger for Earth Hand
   if (clock.isAlarm1())
   {
+    
     //Serial.write(eartHand);
     //eartHand += 6
+    
+    dt = clock.getDateTime();
+    char * cs = clock.dateFormat("s", dt);
+    currSecond = String(cs).toInt();
+
+    //Serial.println(String(cs));
+    //Serial.println(currSecond);
+
+    earthHandAngle = currSecond*6;
+    
+   // writeAngles();
+    
+      
     tone(beepPin, 700, 20);
     digitalWrite(11, HIGH);
 
@@ -183,10 +227,13 @@ void loop()
   if (currentMillis - offsetTimer > currentOffset && hand2 == true ) {
     hand2 = false;
     //led
+
+    spaceHandAngle = currSecond * 6;
+   // writeAngles();
+    
     digitalWrite(12, HIGH);
     tone(beepPin, 700, 20);
-    //spaceHand += 6
-    //Serial.write(spaceHand);
+    
   }
 
   //Turn off space LED
@@ -203,6 +250,27 @@ void loop()
 
 }
 
+void writeAngles(){
+
+     //Serial2
+     Serial2.write("angles ");
+     
+     char buff[3];
+     sprintf(buff, "%.3u", earthHandAngle); 
+     
+     Serial2.write(buff);
+     
+     Serial2.write("000");
+     
+     sprintf(buff, "%.3u", spaceHandAngle); 
+     
+     Serial2.write(buff);
+     
+     Serial2.write("\r");  
+
+
+}
+
 void startDataCheck() {
 
   dt = clock.getDateTime();
@@ -210,7 +278,7 @@ void startDataCheck() {
   currDate = String(cd);
   //Serial.println(currDate);
 
-  
+
   if (data) {
     data = SD.open("DATA.TXT");
   } else {
@@ -246,6 +314,9 @@ void checkData() {
           dataDate = s.substring(0, 10);
 
           String offset = s.substring(22, 32);
+          
+          sCurrOffset = s.substring(22,28);
+          
           currentOffset = (unsigned long)offset.toFloat();
 
           Serial.println(dataDate);
@@ -262,9 +333,9 @@ void checkData() {
         if (attemptCount > maxAttempts) {
           getData = false;
           currentOffset = (unsigned long)EEPROMReadlong(0);
-            
+
         }
-        
+
       }
 
     } else {
@@ -275,17 +346,44 @@ void checkData() {
       Serial.println(currentOffset);
 
       //filePosition = data.position();
-      Serial.println(filePosition);
+      //Serial.println(filePosition);
 
       if (currentOffset != 0) {
         EEPROMWritelong(0, currentOffset);
       }
+
+      updateScreen();
 
       getData = false;
     }
   }
 }
 
+
+
+void updateScreen(void) {
+
+  String offset_s = "";
+  String date_s = " ";
+
+  u8g.setFontPosTop();
+  u8g.firstPage();
+
+  do {
+    // graphic commands to redraw the complete screen should be placed here
+    //u8g.setFont(u8g_font_osb21);
+    u8g.setFont(u8g_font_unifont);
+
+
+    date_s = "Date: " + currDate;
+    offset_s = "Offset: " + sCurrOffset;
+
+    u8g.drawStr( 0, 16, date_s.c_str());
+    u8g.drawStr( 0, 32, offset_s.c_str());
+
+  } while ( u8g.nextPage() );
+
+}
 
 //This function will write a 4 byte (32bit) long to the eeprom at
 //the specified address to address + 3.
