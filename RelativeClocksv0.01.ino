@@ -1,3 +1,5 @@
+#include <EEPROM.h>
+
 /*
   Relative Clocks Arduino Code
   Jonathan Chomko Sept 2016
@@ -28,6 +30,8 @@ bool getData;
 String dataDate = "";
 String currDate = "";
 int beepPin = 10;
+int attemptCount;
+int maxAttempts = 10;
 
 
 void setup()
@@ -74,7 +78,7 @@ void setup()
   currDate = String(cd);
   Serial.println(currDate);
 
-  startDataCheck();
+  //startDataCheck();
 
 }
 
@@ -96,7 +100,7 @@ void loop()
       dt = clock.getDateTime();
       Serial.println(clock.dateFormat("d-m-Y H:i:s - l", dt));
 
-    //Set RTC 
+      //Set RTC
     } else if (s.charAt(0) == 'S') {
 
 
@@ -128,16 +132,23 @@ void loop()
 
       Serial.println("updating");
       startDataCheck();
-      
+
     }
 
     else if (s.charAt(0) == 'C') {
-      
+
       char * cd = clock.dateFormat("Y-m-d", dt);
       currDate = String(cd);
       Serial.println(currDate);
 
+    } else if (s.charAt(0) == 'B') {
+
+      long lastOffest = EEPROMReadlong(0);
+      Serial.println(lastOffest);
+
     }
+
+
   }
 
 
@@ -149,7 +160,7 @@ void loop()
     //Serial.write(eartHand);
     //eartHand += 6
     tone(beepPin, 700, 20);
-    digitalWrite(5, HIGH);
+    digitalWrite(11, HIGH);
 
     //Reset Hand catches
     hand1 = true;
@@ -165,14 +176,14 @@ void loop()
   if (currentMillis - offsetTimer > 30 && hand1 == true) {
     hand1 = false;
     //led
-    digitalWrite(5, LOW);
+    digitalWrite(11, LOW);
   }
 
   //Trigger for Space Hand
   if (currentMillis - offsetTimer > currentOffset && hand2 == true ) {
     hand2 = false;
     //led
-    digitalWrite(6, HIGH);
+    digitalWrite(12, HIGH);
     tone(beepPin, 700, 20);
     //spaceHand += 6
     //Serial.write(spaceHand);
@@ -180,12 +191,12 @@ void loop()
 
   //Turn off space LED
   if (millis() - offsetTimer > currentOffset + 30 && hand2 == false) {
-    digitalWrite(6, LOW);
+    digitalWrite(12, LOW);
   }
 
   //Trigger once a day to get new offset data
   if (clock.isAlarm2()) {
-      startDataCheck();
+    startDataCheck();
   }
 
   checkData();
@@ -194,6 +205,12 @@ void loop()
 
 void startDataCheck() {
 
+  dt = clock.getDateTime();
+  char * cd = clock.dateFormat("Y-m-d", dt);
+  currDate = String(cd);
+  //Serial.println(currDate);
+
+  
   if (data) {
     data = SD.open("DATA.TXT");
   } else {
@@ -224,7 +241,7 @@ void checkData() {
         }
 
         if (c == '\n') {
-          
+
           String s = String(buf);
           dataDate = s.substring(0, 10);
 
@@ -235,24 +252,68 @@ void checkData() {
           index = 0;
 
         }
-        
+
       } else {
-      
+
         Serial.println("data not available");
         data = SD.open("DATA.TXT");
-      
+        attemptCount ++;
+
+        if (attemptCount > maxAttempts) {
+          getData = false;
+          currentOffset = (unsigned long)EEPROMReadlong(0);
+            
+        }
+        
       }
-      
+
     } else {
 
       Serial.println("match found");
       Serial.println(dataDate);
       Serial.println(currDate);
       Serial.println(currentOffset);
-      filePosition = data.position();
-      getData = false;
 
+      //filePosition = data.position();
+      Serial.println(filePosition);
+
+      if (currentOffset != 0) {
+        EEPROMWritelong(0, currentOffset);
+      }
+
+      getData = false;
     }
   }
+}
+
+
+//This function will write a 4 byte (32bit) long to the eeprom at
+//the specified address to address + 3.
+void EEPROMWritelong(int address, long value)
+{
+  //Decomposition from a long to 4 bytes by using bitshift.
+  //One = Most significant -> Four = Least significant byte
+  byte four = (value & 0xFF);
+  byte three = ((value >> 8) & 0xFF);
+  byte two = ((value >> 16) & 0xFF);
+  byte one = ((value >> 24) & 0xFF);
+
+  //Write the 4 bytes into the eeprom memory.
+  EEPROM.write(address, four);
+  EEPROM.write(address + 1, three);
+  EEPROM.write(address + 2, two);
+  EEPROM.write(address + 3, one);
+}
+
+long EEPROMReadlong(long address)
+{
+  //Read the 4 bytes from the eeprom memory.
+  long four = EEPROM.read(address);
+  long three = EEPROM.read(address + 1);
+  long two = EEPROM.read(address + 2);
+  long one = EEPROM.read(address + 3);
+
+  //Return the recomposed long by using bitshift.
+  return ((four << 0) & 0xFF) + ((three << 8) & 0xFFFF) + ((two << 16) & 0xFFFFFF) + ((one << 24) & 0xFFFFFFFF);
 }
 
