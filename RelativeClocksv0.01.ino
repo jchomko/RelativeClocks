@@ -1,13 +1,20 @@
-#include <EEPROM.h>
 
 /*
   Relative Clocks Arduino Code
   Jonathan Chomko Sept 2016
 */
+
+#include <EEPROM.h>
 #include <DS3231.h>
+#include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
 #include "U8glib.h"
+
+#include <Adafruit_GPS.h>
+#include <SoftwareSerial.h>
+
+
 
 
 //Display Variables
@@ -25,7 +32,7 @@ char buf[40];
 long filePosition;
 
 //Hand values
-unsigned long currentOffset;
+unsigned long currentOffset = 0;
 unsigned long offsetTimer;
 bool hand1;
 bool hand2;
@@ -37,24 +44,49 @@ String dataDate = "";
 String currDate = "";
 int beepPin = 10;
 int attemptCount;
-int maxAttempts = 10;
+int maxAttempts = 1;
 
 String sCurrOffset;
 int currSecond;
 
+bool isOffsetNeg;
+int secondPad = 0;
+
+//GPS Stuff
+//TODO: Move to hardware serial
+
+boolean usingInterrupt = false;
+
+
+//SoftwareSerial mySerial(5, 4);
+//Adafruit_GPS GPS(&mySerial);
+
+Adafruit_GPS GPS(&Serial3);
+
+const byte interruptPin = 2;
+volatile byte state = LOW;
+long blinkTimer;
+bool blinkOff;
+
+#define GPSECHO  false
+
+bool setTimeFromGps = false;
+
+
 void setup()
 {
 
-  Serial.begin(57600);
-
+  Serial.begin(9600);
   Serial.println("Initialize DS3231");;
-
-  clock.begin();
 
   Serial.setTimeout(150);
 
   // Disarm alarms and clear alarms for this example, because alarms is battery backed.
   // Under normal conditions, the settings should be reset after power and restart microcontroller.
+  clock.begin();
+
+  Serial.println("after clock begin");
+
   clock.armAlarm1(false);
   clock.armAlarm2(false);
   clock.clearAlarm1();
@@ -66,16 +98,20 @@ void setup()
 
   //Trigger every day
   clock.setAlarm2(0, 0, 10, DS3231_MATCH_H_M, true);
+  Serial.println("after clock setup");
 
   pinMode(11, OUTPUT);
   pinMode(12, OUTPUT);
+  pinMode(7, OUTPUT);
+
+  digitalWrite(7, HIGH);
 
   if (!SD.begin()) {
     Serial.println("initialization failed!");
     // return;
+  } else {
+    Serial.println("initialization done.");
   }
-
-  Serial.println("initialization done.");
 
   if (data) {
     data = SD.open("DATA.TXT");
@@ -108,11 +144,64 @@ void setup()
   sCurrOffset = "";
   earthHandAngle = 0;
   spaceHandAngle = 0;
-  
-  //startDataCheck();
-  startDataCheck();
+
+   startDataCheck();
+
+  //GPS
+  GPS.begin(9600);
+
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);   // 1 Hz update rate
+  GPS.sendCommand(PGCMD_ANTENNA);
+
+  useInterrupt(true);
+
+  delay(1000);
+
+  //GPS Interrupt
+  pinMode(interruptPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin), tick, RISING);
+  pinMode(13, OUTPUT);
+
+  state = false;
+
 
 }
+
+void useInterrupt(boolean v) {
+  if (v) {
+    // Timer0 is already used for millis() - we'll just interrupt somewhere
+    // in the middle and call the "Compare A" function above
+    OCR0A = 0xAF;
+    TIMSK0 |= _BV(OCIE0A);
+    usingInterrupt = true;
+  } else {
+    // do not call the interrupt function COMPA anymore
+    TIMSK0 &= ~_BV(OCIE0A);
+    usingInterrupt = false;
+  }
+}
+
+SIGNAL(TIMER0_COMPA_vect) {
+  char c = GPS.read();
+  // if you want to debug, this is a good time to do it!
+#ifdef UDR0
+  if (GPSECHO)
+    if (c) UDR0 = c;
+  // writing direct to UDR0 is much much faster than Serial.print
+  // but only one character can be written at a time.
+#endif
+}
+
+
+
+void tick() {
+
+  state = true;
+
+}
+
+
 
 
 
@@ -121,9 +210,9 @@ void loop()
   //Set time via Serial
   if (Serial.available() > 0) {
 
-    String s =  Serial.readStringUntil('\n');
+    String s =  Serial.readStringUntil('/n');
 
-    Serial.println(s);
+    //Serial.println(s);
 
     //If READ
     if (s.charAt(0) == 'R') {
@@ -157,6 +246,8 @@ void loop()
       Serial.println(imn);
       Serial.println(iss);
 
+      clock.begin();
+
       clock.setDateTime(iy, im, id, ihr, imn, iss);
 
     } else if (s.charAt(0) == 'U') {
@@ -177,97 +268,161 @@ void loop()
       long lastOffest = EEPROMReadlong(0);
       Serial.println(lastOffest);
 
+    } else if (s.charAt(0) == 'G') {
+
+      setTimeFromGps = true;
+
     }
 
-}
+  }
 
+  //Blink LED
+  if ( state == true ) { //state == true &&
 
-  unsigned long currentMillis = millis();
+    blinkTimer = millis() + 30;
+    digitalWrite(13, HIGH);
+
+    state = false;
+    blinkOff = true;
+    
+    GPS.parse(GPS.lastNMEA());
+
+    if (GPS.milliseconds == 0 && setTimeFromGps) {
+
+      Serial.print(GPS.hour, DEC); Serial.print(':');
+      Serial.print(GPS.minute, DEC); Serial.print(':');
+      Serial.print(GPS.seconds + 1, DEC); Serial.print('.');
+      Serial.println(GPS.milliseconds);
+
+      Serial.print("Date: ");
+      Serial.print(GPS.day, DEC); Serial.print('/');
+      Serial.print(GPS.month, DEC); Serial.print("/20");
+      Serial.println(GPS.year, DEC);
+
+      int y = 2000 + GPS.year;
+      clock.setDateTime(y, GPS.month, GPS.day, GPS.hour, GPS.minute, GPS.seconds);
+      clock.setAlarm1(0, 0, 0, 0, DS3231_EVERY_SECOND);
+
+      //Trigger every day
+      clock.setAlarm2(0, 0, 10, DS3231_MATCH_H_M, true);
+    
+      setTimeFromGps = false;
+    
+    }
+  }
+
+  if ( millis() > blinkTimer && blinkOff ) {
+
+    digitalWrite(13, LOW);
+    blinkOff = false;
+    //state = false;
+
+  }
+
+  //Check for new GPS coordinates
+  if (GPS.newNMEAreceived()) {
+    // a tricky thing here is if we print the NMEA sentence, or data
+    // we end up not listening and catching other sentences!
+    // so be very wary if using OUTPUT_ALLDATA and trytng to print out data
+    //Serial.println(GPS.lastNMEA());   // this also sets the newNMEAreceived() flag to false
+
+    if (!GPS.parse(GPS.lastNMEA()))   // this also sets the newNMEAreceived() flag to false
+      return;  // we can fail to parse a sentence in which case we should just wait for another
+  }
+
+  //unsigned long currentMillis = millis();
+  unsigned long currentMicros = micros();
 
   //Trigger for Earth Hand
   if (clock.isAlarm1())
   {
-    
+
     //Serial.write(eartHand);
     //eartHand += 6
-    
+
     dt = clock.getDateTime();
     char * cs = clock.dateFormat("s", dt);
     currSecond = String(cs).toInt();
 
-    //Serial.println(String(cs));
+    Serial.println(String(cs));
     //Serial.println(currSecond);
 
-    earthHandAngle = currSecond*6;
-    
-   // writeAngles();
-    
-      
+    earthHandAngle = currSecond * 6;
+
+    writeAngles();
+
+
     tone(beepPin, 700, 20);
     digitalWrite(11, HIGH);
+    digitalWrite(7, HIGH);
 
     //Reset Hand catches
     hand1 = true;
     hand2 = true;
 
-    //Start offset timer
-    offsetTimer = currentMillis;
+    offsetTimer = currentMicros;
+    digitalWrite(7, LOW);
 
   }
 
 
   //Turn off earth LED
-  if (currentMillis - offsetTimer > 30 && hand1 == true) {
+  if (currentMicros - offsetTimer > 30000 && hand1 == true) {
     hand1 = false;
     //led
     digitalWrite(11, LOW);
   }
 
   //Trigger for Space Hand
-  if (currentMillis - offsetTimer > currentOffset && hand2 == true ) {
+  if (currentMicros - offsetTimer > currentOffset && hand2 == true ) {
+    
     hand2 = false;
-    //led
-
-    spaceHandAngle = currSecond * 6;
-   // writeAngles();
+    int cs = currSecond + secondPad;
+    
+    if (cs > 59) {
+      cs = 0;
+    }
+    
+    spaceHandAngle = cs * 6;
+    writeAngles();
     
     digitalWrite(12, HIGH);
     tone(beepPin, 700, 20);
-    
+
   }
 
   //Turn off space LED
-  if (millis() - offsetTimer > currentOffset + 30 && hand2 == false) {
+  if (currentMicros - offsetTimer > currentOffset + 30000 && hand2 == false) {
     digitalWrite(12, LOW);
   }
 
   //Trigger once a day to get new offset data
   if (clock.isAlarm2()) {
     startDataCheck();
+
+    setTimeFromGps;
+
   }
 
   checkData();
 
 }
 
-void writeAngles(){
+void writeAngles() {
 
-     //Serial2
-     Serial2.write("angles ");
-     
-     char buff[3];
-     sprintf(buff, "%.3u", earthHandAngle); 
-     
-     Serial2.write(buff);
-     
-     Serial2.write("000");
-     
-     sprintf(buff, "%.3u", spaceHandAngle); 
-     
-     Serial2.write(buff);
-     
-     Serial2.write("\r");  
+  //Serial2
+  //  Serial.write("angles ");
+  //  char buff[3];
+  //  sprintf(buff, "%.3u", earthHandAngle);
+  //  Serial.write(buff);
+  //  Serial.write("000");
+  //  sprintf(buff, "%.3u", spaceHandAngle);
+  //  Serial.write(buff);
+  //  Serial.write("\r");
 
+  Serial.print(spaceHandAngle);
+  Serial.print(",");
+  Serial.println(earthHandAngle);
 
 }
 
@@ -276,7 +431,7 @@ void startDataCheck() {
   dt = clock.getDateTime();
   char * cd = clock.dateFormat("Y-m-d", dt);
   currDate = String(cd);
-  //Serial.println(currDate);
+  Serial.println(currDate);
 
 
   if (data) {
@@ -301,8 +456,10 @@ void checkData() {
     if (dataDate != currDate) {
 
       if (data.available()) {
+
         char c = data.read();
 
+        //add chars to buffer
         if (index < 40) {
           buf[index] = c;
           index ++;
@@ -310,16 +467,51 @@ void checkData() {
 
         if (c == '\n') {
 
+          //data buffer into string
           String s = String(buf);
+
+          //get current date
           dataDate = s.substring(0, 10);
 
-          String offset = s.substring(22, 32);
-          
-          sCurrOffset = s.substring(22,28);
-          
-          currentOffset = (unsigned long)offset.toFloat();
+          //get offset string for display
+          sCurrOffset = s.substring(20, 32);
 
-          Serial.println(dataDate);
+          //get offset string for processing
+          String sCurrOffset = s.substring(20, 32);
+
+          //get index of decimal
+          int d = sCurrOffset.indexOf('.');
+
+          //remove decimal point
+          sCurrOffset.remove(d, 1);
+
+          //add decmial point 3 places back, same as *1000
+          sCurrOffset.setCharAt(d + 3, '.');
+
+          Serial.println(sCurrOffset);
+          
+          //convert string to lon
+          const char * csCurrOffset = sCurrOffset.c_str();
+
+          //find minus sign
+          d = sCurrOffset.indexOf('-');
+
+          //if offset is negative
+          if(d != -1){
+            isOffsetNeg = true;
+            //remove minus sign
+            sCurrOffset.remove(d,1);
+          }else{
+            
+            isOffsetNeg = false;  
+          }
+
+          Serial.println(csCurrOffset);
+          
+          currentOffset = atol( csCurrOffset );
+
+          Serial.println(currentOffset);
+
           index = 0;
 
         }
@@ -327,38 +519,58 @@ void checkData() {
       } else {
 
         Serial.println("data not available");
+        
         data = SD.open("DATA.TXT");
         attemptCount ++;
 
-        if (attemptCount > maxAttempts) {
-          getData = false;
-          currentOffset = (unsigned long)EEPROMReadlong(0);
+        if (attemptCount >= maxAttempts) {
 
+          getData = false;
+          currentOffset = EEPROMReadlong(0);
+          Serial.print("backup offset: ");
+          Serial.println(currentOffset);
+          attemptCount = 0;
+          
         }
 
       }
 
     } else {
 
+      //if current offset is positive
+      if (isOffsetNeg == false) {
+
+        //Calculate padding
+        if (currentOffset < 1000000) {
+          secondPad = 1;
+        } else if (currentOffset > 1000000 && currentOffset < 2000000) {
+          secondPad = 2;
+        }
+        //get inverse of offset value
+        currentOffset = 1000000 - currentOffset;
+      
+      //if offset is negative
+      } else {
+        //turn offset to a positive value
+//        currentOffset = currentOffset;
+        //secondPad = -1;
+      }
+
       Serial.println("match found");
       Serial.println(dataDate);
       Serial.println(currDate);
       Serial.println(currentOffset);
-
-      //filePosition = data.position();
-      //Serial.println(filePosition);
 
       if (currentOffset != 0) {
         EEPROMWritelong(0, currentOffset);
       }
 
       updateScreen();
-
       getData = false;
+
     }
   }
 }
-
 
 
 void updateScreen(void) {
